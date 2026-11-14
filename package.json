@@ -14,6 +14,8 @@
     "qa:representative": "npm run qa:fixtures && node scripts/browser-qa.cjs",
     "qa:full": "node scripts/full-playthrough.cjs",
     "release": "npm run build && python scripts/package-release.py",
+    "release:itch": "npm run build && python scripts/package-itch.py",
+    "qa:itch": "npm run qa:fixtures && node scripts/itch-qa.cjs",
     "qa:visual": "npm run qa:fixtures && node scripts/visual-qa.cjs",
     "qa:production": "node scripts/production-smoke.cjs",
     "qa:walls": "npm run qa:fixtures && node scripts/side-wall-qa.cjs --after && node scripts/wall-input-qa.cjs && node scripts/wall-qa.cjs --after"
