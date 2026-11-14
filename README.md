@@ -52,3 +52,5 @@ npm run qa:full
 `artifacts/` の検証出力・fixtureと `release/` のZIPは生成物のためGitには含めません。fixtureを使うnpm検証コマンドは実行時に `qa:fixtures` から再作成します。`qa:visual` と `qa:walls` は開発サーバーが必要です。別ポートを使う場合は環境変数 `QA_URL` に末尾 `/` 付きのURLを指定してください。配布作成にはPython 3も必要です。
 
 `src/simulation/` は独立したルール、`src/render/` はThree.js迷宮、`src/ui/` は画面、`src/audio/` は音、`public/assets/` は素材です。Safari/Firefox・スマートフォン実機・耳による音色評価、初見プレイヤーの30〜45分という所要時間は未確認です。
+
+itch.io用は `npm run release:itch` で `release/AncientKingdom-itch.zip` を生成します。`npm run qa:itch` で実ZIPのサブディレクトリ・iframe配信を検証し、掲載用画像も生成します。設定・本文・検証の範囲は [docs/ITCH_RELEASE.md](docs/ITCH_RELEASE.md) を参照してください。
