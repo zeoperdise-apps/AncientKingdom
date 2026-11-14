@@ -1,0 +1,117 @@
+import './style.css';
+import { createGame, dispatch, getObjective, getInteractions, getStats, getSkillCost, getMemoryUsed, getIntentText, loadGame, saveGame, serializeGame, parseGame, type Action, type GameState } from './simulation';
+import { ENEMIES, FLOORS, ITEMS, ORIGINS, SKILLS, type OriginId, type SkillId, type ItemId } from './data/game';
+import { DungeonView } from './render/dungeon';
+import { Sound } from './audio/sound';
+import { mapMarkup, actionButton, escapeHtml } from './ui/templates';
+
+const app=document.querySelector<HTMLDivElement>('#app')!;
+app.tabIndex=-1;
+app.innerHTML=`<div class="game-shell"><div id="world" class="world"></div><div class="vignette" aria-hidden="true"></div><div class="grain" aria-hidden="true"></div>
+<header id="hud" class="hud"></header><nav id="tools" class="tools" aria-label="冒険のメニュー"></nav>
+<section id="title" class="title-screen"></section><section id="camp" class="camp-panel"></section>
+<section id="battle" class="battle" aria-label="戦闘"></section><section id="outcome" class="outcome"></section>
+<div id="context" class="context"></div><div id="side-passages" class="side-passages" aria-live="polite"></div><div id="compass" class="compass"></div><footer id="bottom" class="bottom"></footer>
+<div id="notice" class="notice" role="status" aria-live="polite"></div><div id="save-notice" class="save-notice" role="alert"></div><div id="graphics-notice" class="graphics-notice" role="status"></div></div>
+<dialog id="dialog" aria-labelledby="dialog-title"><div id="dialog-content"></div></dialog>`;
+const $=(id:string)=>document.getElementById(id)!;
+const storage={getItem:(k:string)=>localStorage.getItem(k),setItem:(k:string,v:string)=>localStorage.setItem(k,v),removeItem:(k:string)=>localStorage.removeItem(k)};
+const sound=new Sound();
+let initial=loadGame(storage),state=initial.status==='ok'?initial.state:createGame(2007,'flame');
+let hasGame=initial.status==='ok',title=true,modal='',noticeTimer=0,lastInput=0,lastMovement=-Infinity;
+let journalLines=state.log.filter(v=>v!=='向きを変えた。'&&!v.includes('の回廊を進んだ。'));
+let lastFocus:HTMLElement|null=null,checkpoint:GameState|null=null;
+const CHECKPOINT='ancient-kingdom.checkpoint.v1';
+try{const raw=localStorage.getItem(CHECKPOINT);if(raw){const c=parseGame(raw);if(c.seed===state.seed&&c.phase==='explore')checkpoint=c;}}catch{}
+const dialog=$('dialog') as HTMLDialogElement;
+let view:DungeonView|null=null;
+try{view=new DungeonView($('world'),text=>{$('graphics-notice').textContent=text;setTimeout(()=>$('graphics-notice').textContent='',7000);});view.sync(state,true,sound.settings.reduced);}
+catch(e){$('graphics-notice').textContent='迷宮を描画できません。Chrome / Edgeのグラフィックアクセラレーションを有効にして再読み込みしてください。保存した冒険は残っています。';$('world').innerHTML='<div class="webgl-fallback"><h2>迷宮を描画できません</h2><p>WebGLを利用できません。Chrome / Edgeのグラフィックアクセラレーションを有効にして再読み込みしてください。</p><p>保存した冒険はこのブラウザに残っています。</p></div>';console.warn('WebGL initialization failed',e);}
+function notify(text:string){$('notice').textContent=text;clearTimeout(noticeTimer);noticeTimer=window.setTimeout(()=>{$('notice').textContent='';},4200);}
+function persist(){const saved=saveGame(state,storage);$('save-notice').textContent=saved.ok?'':`保存できません。この画面では続けられますが、再読み込みで進行が失われます。 ${saved.message}`;}
+function command(action:Action){
+ if(title)return;
+ if(action.type==='move'||action.type==='turn'){const now=performance.now();if(now-lastMovement<150)return;lastMovement=now;}
+ const before=state,result=dispatch(state,action);
+ if(!result.ok){notify(result.message);if(result.events.some(e=>e.type==='blocked'))sound.play('crash');return;}state=result.state;
+ if(before.phase==='explore'&&state.phase==='battle'){checkpoint=structuredClone(before);try{localStorage.setItem(CHECKPOINT,serializeGame(checkpoint));}catch{notify('戦闘前の記録をこの画面内に保持しました。');}}
+ persist();for(const e of result.events){if(e.type==='floor')sound.play('step');else if(e.type==='heal')sound.play('heal');else if(e.type==='victory'||e.type==='levelUp')sound.play('victory');}
+ if(['attack','defend','skill'].includes(action.type))sound.play(action.type==='defend'?'confirm':'attack');
+ journalLines.push(...result.events.filter(e=>e.type!=='move'&&e.type!=='turn').map(e=>e.text));journalLines=journalLines.slice(-8);
+ if(before.phase!==state.phase)closeModal();view?.sync(state,before.floor!==state.floor,sound.settings.reduced);render();if(modal)refreshModal();
+ if(state.phase==='ending'){clearTimeout(noticeTimer);$('notice').textContent='';}
+ else if(result.events.some(e=>['victory','levelUp','treasure','floor','heal','memory','escape'].includes(e.type)))notify(result.message);
+}
+function render(){
+ view?.setActive(!title&&!dialog.open&&state.phase!=='camp');
+ const focused=document.activeElement instanceof HTMLButtonElement?document.activeElement:null;
+ const focusAction=focused?.dataset.action,focusUi=focused?.dataset.ui;
+ app.classList.toggle('is-title',title);app.classList.toggle('in-battle',!title&&state.phase==='battle');app.classList.toggle('in-camp',!title&&state.phase==='camp');app.classList.toggle('in-ending',!title&&state.phase==='ending');
+ app.classList.toggle('is-exploring',!title&&state.phase==='explore');
+ const p=state.player,s=getStats(state),phase=state.phase;
+ $('title').hidden=!title;
+ if(title)$('title').innerHTML=`<div class="title-memory" aria-hidden="true"></div><div class="title-copy"><p class="eyebrow">THE MEMORY BENEATH THE RUINS</p><h1>古都</h1><p class="subtitle">Ancient Kingdom</p><p class="title-story">王国は滅び、記憶だけが地下に残った。<br>三つの王印を集め、最後の灯火を取り戻せ。</p><div class="title-menu">${hasGame?'<button data-ui="continue" class="primary">冒険の続きを辿る <span>CONTINUE</span></button>':''}<button data-ui="new" ${!hasGame?'class="primary"':''}>新たな記憶を紡ぐ <span>NEW GAME</span></button><button data-ui="help">遊び方 <span>HOW TO PLAY</span></button><button data-ui="settings">音と設定 <span>SETTINGS</span></button><button data-ui="credits">クレジット <span>CREDITS</span></button></div>${initial.status==='error'?`<p class="error">保存データを読み込めません。${escapeHtml(initial.message)}<br>新たな冒険から開始できます。</p>`:''}<p class="title-credit">原作 Studio Ark · 2007<br><span>Browser edition · 2026</span></p></div><div class="title-side" aria-hidden="true"><span>地下に眠る、あなたの記憶。</span></div>`;
+ for(const id of ['hud','tools','bottom','context','compass','side-passages'])$(id).hidden=title;
+ if(title){$('camp').hidden=$('battle').hidden=$('outcome').hidden=true;return;}
+ $('hud').innerHTML=`<div class="floor-label"><span class="eyebrow">ANCIENT KINGDOM</span><h1>${phase==='camp'?'地上の灯火':`<b>B${state.floor+1}</b> ${FLOORS[state.floor].name}`}</h1><p>${getObjective(state)}</p></div><div class="vitals"><div class="level">LV <strong>${p.level}</strong><span>${ORIGINS[p.origin].name}</span></div><div class="resource hp"><span>HP</span><strong>${p.hp}<small> / ${s.maxHp}</small></strong><i style="--fill:${p.hp/s.maxHp*100}%"></i></div><div class="resource mp"><span>MP</span><strong>${p.mp}<small> / ${s.maxMp}</small></strong><i style="--fill:${p.mp/s.maxMp*100}%"></i></div><div class="gold">${p.gold} <small>G</small><span class="seals" title="王印">${[0,1,2].map(i=>`<i class="${state.seals>i?'lit':''}">◇</i>`).join('')}</span></div></div>`;
+ $('tools').innerHTML='<button data-ui="map" title="地図 M">地図 <kbd>M</kbd></button><button data-ui="memory" title="記憶 K">記憶 <kbd>K</kbd></button><button data-ui="items" title="持物 I">持物 <kbd>I</kbd></button><button data-ui="settings" aria-label="設定">設定 <span>⚙</span></button>';
+ $('camp').hidden=phase!=='camp';$('battle').hidden=phase!=='battle';$('outcome').hidden=!['ending','defeated'].includes(phase);
+ if(phase==='camp')$('camp').innerHTML=`<div class="panel-heading"><p class="eyebrow">THE LAST CAMPFIRE</p><h2>旅支度</h2><p>地上の灯火は、いつでもあなたを迎える。</p></div><div class="camp-actions">${actionButton(state,{type:'enter'},'地下へ降りる','primary')}${actionButton(state,{type:'rest'},'休息する <small>無料 · 全回復 / 帰還糸の補給</small>')}</div><h3>行商人の品</h3><div class="shop">${(Object.keys(ITEMS) as ItemId[]).map(id=>`<div class="shop-row"><div><strong>${ITEMS[id].name}</strong><small>所持 ${p.inventory[id]} · ${ITEMS[id].description}</small></div>${actionButton(state,{type:'buy',item:id},`${ITEMS[id].price} G`)}</div>`).join('')}</div><h3>鍛冶師</h3><div class="shop-row"><div><strong>古い剣 +${p.weapon}</strong><small>攻撃 ${s.attack} → ${s.attack+2}</small></div>${actionButton(state,{type:'upgrade'},`${s.upgradePrice} G で強化`)}</div><p class="camp-note">記憶を整理してから、深層へ。<br>帰還糸で、探索中いつでもこの拠点に戻れます。</p>`;
+ if(phase==='battle'&&state.battle){const b=state.battle,e=ENEMIES[b.enemyId];$('battle').innerHTML=`<div class="enemy-info"><p class="eyebrow">${b.boss?'GUARDIAN OF THE MEMORY':'ENCOUNTER'}</p><h2>${e.name}</h2><div class="enemy-health"><i style="width:${b.hp/e.hp*100}%"></i></div><p class="enemy-meta">HP ${b.hp} / ${e.hp} <span>${e.element}属性 · 弱点 ${e.weakness}</span></p><p class="intent ${b.intent==='heavy'?'danger':''}">${getIntentText(state)}</p></div><div class="battle-menu">${actionButton(state,{type:'attack'},'<kbd>1</kbd> 攻撃')}${actionButton(state,{type:'defend'},'<kbd>2</kbd> 防御')}<button data-ui="skills"><kbd>3</kbd> スキル</button>${actionButton(state,{type:'item',item:'potion'},`<kbd>4</kbd> 回復薬 <small>${p.inventory.potion}</small>`)}${actionButton(state,{type:'item',item:'ether'},`<kbd>5</kbd> 魔力薬 <small>${p.inventory.ether}</small>`)}${actionButton(state,{type:'flee'},'<kbd>6</kbd> 逃走')}</div>${b.boss?'<p class="battle-hint">守護者からは逃走できません。大技の予告には防御を。</p>':'<p class="battle-hint">敵の予告に合わせて行動を選ぶ。スキルは弱点で威力が上がる。</p>'}`;}
+ if(phase==='defeated')$('outcome').innerHTML=`<div class="outcome-content"><p class="eyebrow">THE LIGHT STILL REMAINS</p><h2>灯火は、まだ消えない。</h2><p>探索隊があなたを探している。<br>成長と王印、踏破した記憶は失われない。</p>${actionButton(state,{type:'rescue'},'救出を受ける <small>金貨の25%を失い、拠点で全回復</small>','primary')}<button data-ui="checkpoint" ${checkpoint?'':'disabled'}>戦闘前の記録から再開</button>${!checkpoint?'<small>有効な戦闘前の記録がありません。</small>':''}</div>`;
+ if(phase==='ending')$('outcome').innerHTML=`<div class="outcome-content ending"><p class="eyebrow">ANCIENT KINGDOM — EPILOGUE</p><h2>最後の灯火を、地上へ。</h2><p>王は、滅びの夜を一人で抱えていた。<br>三つの王印が輝くと、遠い日の人々の声が<br>石の回廊を満たしていく。</p><p>古都はもう、忘れられた都ではない。<br>あなたが持ち帰った記憶は、次の朝を照らす。</p><div class="records"><span>歩数 <b>${state.stats.steps}</b></span><span>勝利 <b>${state.stats.victories}</b></span><span>宝箱 <b>${state.stats.treasures} / 5</b></span><span>到達 LV <b>${p.level}</b></span></div>${actionButton(state,{type:'continue'},'記憶の戻った古都を歩く','primary')}<button data-ui="title">タイトルへ</button><small>原作 Studio Ark / ブラウザ完成版 2026</small></div>`;
+ const interactions=getInteractions(state),prompt=interactions.find(i=>i.enabled)??interactions[0];
+ const currentWalls=state.floors[state.floor].cells[state.position].walls;
+ $('side-passages').innerHTML=phase==='explore'?`${!(currentWalls&(1<<((state.direction+3)%4)))?'<span class="side-sign side-left">← 横道</span>':''}${!(currentWalls&(1<<((state.direction+1)%4)))?'<span class="side-sign side-right">横道 →</span>':''}`:'';
+ $('context').innerHTML=phase==='explore'&&prompt?`<div class="interaction ${prompt.enabled?'':'used'}"><span>${prompt.kind==='boss'?'王印の気配':prompt.kind==='fountain'?'澄んだ水音':prompt.kind==='chest'?'古い記憶':'石段の先へ'}</span><strong>${prompt.label}</strong>${prompt.enabled?actionButton(state,{type:'interact'},'<kbd>E</kbd> 調べる'):''}</div>`:'';
+ $('compass').innerHTML=phase==='explore'?`<span>${['北','東','南','西'][state.direction]}</span><b>${['N','E','S','W'][state.direction]}</b><small>B${state.floor+1} · ${state.position%state.floors[state.floor].size+1},${Math.floor(state.position/state.floors[state.floor].size)+1}</small>`:'';
+ const log=journalLines.slice(-3);
+ $('bottom').innerHTML=`<div class="journal" aria-live="polite">${log.map((line,i)=>`<p class="${i===log.length-1?'latest':''}">${escapeHtml(line)}</p>`).join('')}</div>${phase==='explore'?`<div class="movement" aria-label="移動操作">${actionButton(state,{type:'turn',delta:-1},'↶<small>左を向く</small>','turn-left')}${actionButton(state,{type:'move'},'↑<small>前進</small>','forward')}${actionButton(state,{type:'turn',delta:1},'↷<small>右を向く</small>','turn-right')}${actionButton(state,{type:'move',backward:true},'↓<small>後退</small>','backward')}<span class="keyboard-hint">WASD / 矢印 · E 調べる</span></div>`:`<p class="footer-hint">${phase==='battle'?'1–6 コマンド · 敵の予告に注意':phase==='camp'?'地図 M · 記憶 K · 持物 I · 設定 Esc':''}</p>`}`;
+ if(focused&&!dialog.open){const selector=focusAction?`[data-action="${CSS.escape(focusAction)}"]`:focusUi?`[data-ui="${CSS.escape(focusUi)}"]`:'';const next=selector?app.querySelector<HTMLButtonElement>(selector):null;if(next&&!next.disabled&&!next.closest('[hidden]'))next.focus({preventScroll:true});else app.focus({preventScroll:true});}
+}
+function openModal(kind:string){if(!dialog.open)lastFocus=document.activeElement instanceof HTMLElement?document.activeElement:null;modal=kind;refreshModal();if(!dialog.open)dialog.showModal();view?.setActive(false);requestAnimationFrame(()=>dialog.querySelector<HTMLElement>('[autofocus],button:not(:disabled),input')?.focus());}
+function closeModal(){if(dialog.open)dialog.close();modal='';view?.setActive(!title&&state.phase!=='camp');if(lastFocus?.isConnected&&lastFocus!==document.body)lastFocus.focus();else if(lastFocus?.dataset.ui)document.querySelector<HTMLElement>(`[data-ui="${CSS.escape(lastFocus.dataset.ui)}"]`)?.focus();else app.focus({preventScroll:true});}
+function modalFrame(heading:string,content:string){return `<div class="dialog-heading"><div><p class="eyebrow">ANCIENT KINGDOM</p><h2 id="dialog-title">${heading}</h2></div><button data-ui="close" class="close-button" aria-label="閉じる">×</button></div><div class="dialog-body">${content}</div>`;}
+function refreshModal(){
+ const focus=(document.activeElement as HTMLElement)?.dataset.focus,scroll=$('dialog-content').scrollTop;
+ const p=state.player,stats=getStats(state);let heading='',content='';
+ switch(modal){
+ case 'confirm-new':heading='新たな冒険を始めますか';content='<p>現在の冒険と戦闘前の記録は、新しい冒険で上書きされます。</p><div class="dialog-actions"><button data-ui="origins" class="primary">新たな冒険へ</button><button data-ui="close" autofocus>戻る</button></div>';break;
+ case 'origins':heading='あなたに残る、生来の記憶';content=`<p>親しい属性ほど、少ないメモリーで記憶できます。<br>どの記憶でも、すべてのスキルを選び直せます。</p><div class="origin-list">${(Object.keys(ORIGINS) as OriginId[]).map((id,i)=>`<button data-origin="${id}" class="origin"><span class="origin-mark">${['燈','風','泉'][i]}</span><strong>${ORIGINS[id].name}</strong><small>${ORIGINS[id].description}</small></button>`).join('')}</div><p class="muted">初期記憶：灯火の矢 / 聖泉の祈り<br>冒険は自動で保存されます。</p>`;break;
+ case 'map':heading=`B${state.floor+1} ${FLOORS[state.floor].name}`;content=mapMarkup(state)+'<div class="map-legend"><span>▲ 現在地</span><span>↑ 入口</span><span>↓ 階段 / 守護者</span><span>◇ 宝箱</span><span>○ 泉</span></div>'+`<p class="muted">足を踏み入れた場所だけが記憶に残る。<br>${getObjective(state)}</p>`;break;
+ case 'items':heading='旅の持物';content=`<p>金貨 <b class="number">${p.gold} G</b> · 武器 +${p.weapon} · 攻撃 ${stats.attack} / 防御 ${stats.defense}</p><div class="inventory-list">${(Object.keys(ITEMS) as ItemId[]).map(id=>`<div class="inventory-row"><div><h3>${ITEMS[id].name} <b>×${p.inventory[id]}</b></h3><p>${ITEMS[id].description}</p></div><div>${actionButton(state,{type:'item',item:id},'使う')}</div></div>`).join('')}</div><p class="muted">帰還すると全回復。帰還糸は拠点で最低1個まで無料補給されます。</p>`;break;
+ case 'memory':heading='記憶の書';content=`<div class="memory-header"><span>生来の記憶 · ${ORIGINS[p.origin].name}</span><strong>メモリー ${getMemoryUsed(state)} / ${stats.memory}</strong></div><p class="muted">火 ↔ 水 · 風 ↔ 土 · 聖 ↔ 闇<br>反対の属性が弱点。忘却しても、何度でも記憶し直せます。</p><div class="skill-list">${(Object.keys(SKILLS) as SkillId[]).map(id=>{const skill=SKILLS[id],known=p.skills.includes(id);return `<div class="skill-row ${known?'known':''}"><span class="element">${skill.element}</span><div><h3>${skill.name} <small>MP ${skill.mp} · 記憶 ${getSkillCost(state,id)}</small></h3><p>${skill.description}</p><div class="skill-actions">${known?actionButton(state,{type:'skill',skill:id},'使う'):''}${actionButton(state,{type:known?'forget':'memorize',skill:id},known?'忘却する':'記憶する')}</div></div></div>`;}).join('')}</div>`;break;
+ case 'skills':heading='記憶したスキル';content=`<p>MP ${p.mp} / ${stats.maxMp}${state.battle?` · ${ENEMIES[state.battle.enemyId].name}の弱点：${ENEMIES[state.battle.enemyId].weakness}`:''}</p><div class="skill-list">${p.skills.map(id=>`<div class="skill-row"><span class="element">${SKILLS[id].element}</span><div><h3>${SKILLS[id].name} <small>MP ${SKILLS[id].mp}</small></h3><p>${SKILLS[id].description}</p>${actionButton(state,{type:'skill',skill:id},'発動する')}</div></div>`).join('')}</div>`;break;
+ case 'settings':heading='音と設定';content=`<div class="setting-row"><label for="mute">音をミュート</label><input id="mute" type="checkbox" data-setting="muted" ${sound.settings.muted?'checked':''}></div><div class="setting-row"><label for="volume">音量 <span id="volume-value">${Math.round(sound.settings.volume*100)}%</span></label><input id="volume" type="range" min="0" max="100" value="${sound.settings.volume*100}" data-setting="volume"></div><div class="setting-row"><label for="reduced">動きを減らす</label><input id="reduced" type="checkbox" data-setting="reduced" ${sound.settings.reduced?'checked':''}></div><p class="muted">音は操作後に鳴ります。別のタブを表示している間は、描画と音を一時停止します。</p><div class="dialog-actions"><button data-ui="help">遊び方</button><button data-ui="credits">クレジット</button>${!title?'<button data-ui="title">タイトルへ戻る</button>':''}</div>`;break;
+ case 'help':heading='古都の歩き方';content='<p class="help-intro">石の回廊を進み、記憶を取り戻す<br>一人称ダンジョンRPG。</p><dl class="help-list"><dt>探索</dt><dd>W / ↑ 前進、S / ↓ 後退。A・D / ←・→ で90度旋回。E・Enter・Spaceで足元を調べる。画面下のボタンでも操作できます。</dd><dt>旅支度</dt><dd>記憶の宝箱で成長し、泉で一度だけ全回復。帰還糸で拠点へ戻れます。拠点の休息は無料です。</dd><dt>戦闘</dt><dd>1 攻撃 / 2 防御 / 3 スキル / 4 回復薬 / 5 魔力薬 / 6 逃走。大技の予告には防御。通常敵からは必ず逃げられます。薬とスキルも1ターンを使います。</dd><dt>記憶</dt><dd>Kでスキルの記憶・忘却。生来属性に近いスキルほど記憶費用が小さくなります。聖は回復で、闇の敵への攻撃魔法ではありません。</dd><dt>旅の目的</dt><dd>三つの王印を集め、白い斧騎士を越え、B5で忘却の王と対峙してください。M 地図 / I 持物 / Esc 設定。メニュー中は移動しません。</dd><dt>保存</dt><dd>行動ごとに自動保存。同じ端末・ブラウザで続きを遊べます。戦闘不能時は救出、または戦闘前の記録から再開できます。</dd></dl>';break;
+ case 'credits':heading='古都 ～Ancient Kingdom～';content='<div class="credits"><img src="/assets/title.png" width="120" height="134" alt="2007年の原作タイトル画面"><div><h3>原作 Studio Ark · 2007</h3><p>携帯Java版の作品名、画像3点、MIDIとWAV、四方向探索、属性とスキルメモリーの構想を継承。</p></div></div><p>ブラウザ完成版 · 2026<br>Three.js / TypeScript / Web Audio</p><p>物語・全5階の進行・戦闘・敵とスキルの数値・成長・保存・新規ピクセル敵は、ブラウザ版で追加したものです。</p><p class="muted">原曲 cave.mid の音符を解析し、Web Audioのシンプルなシンセで再生しています。原作MIDI音源とは音色が異なります。壁・廃墟・白い斧騎士と、crash.wav / step.wavは原作素材です。</p>';break;
+ }
+ $('dialog-content').innerHTML=modalFrame(heading,content);$('dialog-content').scrollTop=scroll;if(focus)(dialog.querySelector<HTMLElement>(`[data-focus="${CSS.escape(focus)}"]:not(:disabled)`)??dialog.querySelector<HTMLElement>('[data-ui="close"]'))?.focus({preventScroll:true});
+}
+async function activate(){try{await sound.unlock();}catch{notify('音声を開始できません。音なしで続けられます。');}}
+document.addEventListener('click',event=>{
+ const target=(event.target as HTMLElement).closest<HTMLButtonElement>('button');if(!target||target.disabled)return;void activate();
+ if(target.dataset.action){const action=JSON.parse(target.dataset.action) as Action;if(modal==='skills')closeModal();command(action);return;}
+ if(target.dataset.origin){state=createGame((Date.now()^Math.floor(Math.random()*0xffffff))>>>0||2007,target.dataset.origin as OriginId);journalLines=[...state.log];checkpoint=null;try{localStorage.removeItem(CHECKPOINT);}catch{}title=false;hasGame=true;initial={status:'empty'};closeModal();persist();view?.sync(state,true,sound.settings.reduced);render();sound.play('confirm');return;}
+ const task=target.dataset.ui;if(!task)return;sound.play('confirm');
+ if(task==='close'){closeModal();return;}if(task==='new'){openModal(hasGame||initial.status==='error'?'confirm-new':'origins');return;}if(task==='origins'){openModal('origins');return;}
+ if(task==='continue'){title=false;closeModal();render();view?.sync(state,true,sound.settings.reduced);return;}if(task==='title'){title=true;closeModal();render();return;}
+ if(task==='checkpoint'){if(checkpoint){state=structuredClone(checkpoint);closeModal();persist();render();view?.sync(state,true,sound.settings.reduced);notify('戦闘前の記録から再開しました。');}return;}
+ if(['map','memory','items','skills'].includes(task)&&title)return;if(task==='memory'&&state.phase==='battle'){notify('戦闘中は記憶を整理できません。スキルは戦闘コマンドから。');return;}openModal(task);
+});
+document.addEventListener('input',event=>{const input=event.target as HTMLInputElement,setting=input.dataset.setting;if(!setting)return;if(setting==='volume'){sound.settings.volume=Number(input.value)/100;$('volume-value').textContent=`${input.value}%`;}else if(setting==='muted')sound.settings.muted=input.checked;else sound.settings.reduced=input.checked;sound.apply();view?.sync(state,true,sound.settings.reduced);});
+dialog.addEventListener('cancel',()=>{modal='';});
+dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeModal();}});
+document.addEventListener('keydown',event=>{
+ if(dialog.open){if(event.key==='Escape'){event.preventDefault();closeModal();}return;}if(event.ctrlKey||event.metaKey||event.altKey)return;
+ const key=event.key.toLowerCase();if((key==='enter'||key===' ')&&(event.target as HTMLElement).closest('button'))return;if(title){if(key==='enter'){event.preventDefault();void activate();if(hasGame){title=false;render();}else openModal('origins');}return;}
+ if(['m','i','k','escape'].includes(key)){event.preventDefault();const kind=({m:'map',i:'items',k:'memory',escape:'settings'} as Record<string,string>)[key];if(kind==='memory'&&state.phase==='battle'){notify('記憶の整理は戦闘の外で行ってください。');return;}openModal(kind);return;}
+ if((event.target as HTMLElement).matches('input,textarea,select'))return;
+ if(event.repeat||(state.phase==='battle'&&performance.now()-lastInput<150))return;let action:Action|undefined;
+ if(state.phase==='explore'){if(['w','arrowup'].includes(key))action={type:'move'};else if(['s','arrowdown'].includes(key))action={type:'move',backward:true};else if(['a','arrowleft'].includes(key))action={type:'turn',delta:-1};else if(['d','arrowright'].includes(key))action={type:'turn',delta:1};else if(['e','enter',' '].includes(key))action={type:'interact'};}
+ else if(state.phase==='battle'){if(key==='3'){event.preventDefault();openModal('skills');return;}action=({'1':{type:'attack'},'2':{type:'defend'},'4':{type:'item',item:'potion'},'5':{type:'item',item:'ether'},'6':{type:'flee'}} as Record<string,Action>)[key];}
+ if(action){event.preventDefault();if(state.phase==='battle')lastInput=performance.now();void activate();command(action);}
+});
+// Opt-in development harness. Production builds expose no state mutation API.
+if(import.meta.env.DEV&&new URLSearchParams(location.search).has('test'))(window as unknown as {__AK_TEST:unknown}).__AK_TEST={getState:()=>structuredClone(state),command:(a:Action)=>command(a),load:(raw:string)=>{state=parseGame(raw);journalLines=state.log.filter(v=>v!=='向きを変えた。'&&!v.includes('の回廊を進んだ。'));clearTimeout(noticeTimer);$('notice').textContent='';hasGame=true;title=false;closeModal();persist();view?.sync(state,true,sound.settings.reduced);render();},serialize:()=>serializeGame(state),audio:()=>sound.diagnostics(),view:()=>view};
+render();

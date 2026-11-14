@@ -1,0 +1,21 @@
+const { chromium }=require('playwright-core');
+require('node:fs').mkdirSync('artifacts',{recursive:true});
+const path=require('node:path');
+(async()=>{
+ const browser=await chromium.launch({headless:true,channel:'chrome'});
+ const context=await browser.newContext({viewport:{width:1440,height:900}});
+ const page=await context.newPage(),errors=[],failures=[];
+ page.on('pageerror',e=>errors.push(String(e)));page.on('console',m=>{if(m.type()==='error')errors.push(m.text());});page.on('requestfailed',r=>failures.push(r.url()+': '+r.failure()?.errorText));page.on('response',r=>{if(r.status()>=400)failures.push(r.status()+' '+r.url());});
+ await page.goto((process.env.QA_URL||'http://127.0.0.1:5173/')+'?test=1');await page.waitForTimeout(900);
+ await page.screenshot({path:'artifacts/title-desktop.png'});
+ await page.locator('[data-ui="new"]').click();await page.locator('[data-origin="flame"]').click();await page.waitForTimeout(500);
+ await page.screenshot({path:'artifacts/camp-desktop.png'});
+ await page.locator('button[data-action]').filter({hasText:'地下へ降りる'}).click();await page.waitForTimeout(400);
+ await page.screenshot({path:'artifacts/explore-desktop.png'});
+ await page.keyboard.press('m');await page.screenshot({path:'artifacts/map-desktop.png'});await page.keyboard.press('Escape');
+ await page.keyboard.press('i');await page.screenshot({path:'artifacts/items-desktop.png'});await page.keyboard.press('Escape');
+ await page.keyboard.press('k');await page.screenshot({path:'artifacts/memory-desktop.png'});await page.keyboard.press('Escape');
+ await page.setViewportSize({width:360,height:780});await page.waitForTimeout(400);await page.screenshot({path:'artifacts/explore-mobile.png'});
+ console.log(JSON.stringify({errors,failures,state:await page.evaluate(()=>window.__AK_TEST.getState().phase),overflow:await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth)},null,2));
+ await browser.close();
+})();

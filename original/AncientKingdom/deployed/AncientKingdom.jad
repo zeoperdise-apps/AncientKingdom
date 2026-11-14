@@ -1,0 +1,8 @@
+﻿MIDlet-1: AncientKingdom,,net.ark.ancientkingdom.AncientKingdom
+MIDlet-Jar-Size: 94875
+MIDlet-Jar-URL: AncientKingdom.jar
+MIDlet-Name: Ancient Kingdom
+MIDlet-Vendor: Studio Ark
+MIDlet-Version: 0.0.5
+MicroEdition-Configuration: CLDC-1.1
+MicroEdition-Profile: MIDP-2.0

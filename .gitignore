@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+
+# Reproducible QA output, extracted test builds, and release archives.
+/artifacts/
+/release/
+__pycache__/
