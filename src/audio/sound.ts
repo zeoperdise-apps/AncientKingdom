@@ -1,3 +1,5 @@
+import { assetUrl } from '../assets';
+
 interface Midi {duration:number;notes:[number,number,number,number,number][]}
 export interface AudioSettings {muted:boolean;volume:number;reduced:boolean}
 export class Sound {
@@ -9,7 +11,7 @@ export class Sound {
   constructor(){try{const s=JSON.parse(localStorage.getItem('ancient-kingdom.settings')??'null');if(s&&typeof s.muted==='boolean'&&typeof s.volume==='number')this.settings={muted:s.muted,volume:Math.max(0,Math.min(1,s.volume)),reduced:!!s.reduced};}catch{}document.addEventListener('visibilitychange',()=>{if(document.hidden)this.context?.suspend();else if(this.context)this.context.resume().catch(()=>{});});}
   async unlock(){
     if(!this.context){this.context=new AudioContext();this.master=this.context.createGain();this.master.connect(this.context.destination);this.apply();
-      const assets=await Promise.allSettled([fetch('/assets/cave-notes.json').then(r=>r.json()).then(v=>this.midi=v),...['step','crash'].map(name=>fetch(`/assets/${name}.wav`).then(r=>r.arrayBuffer()).then(b=>this.context!.decodeAudioData(b)).then(b=>{this.buffers.set(name,b);}))]);
+      const assets=await Promise.allSettled([fetch(assetUrl('cave-notes.json')).then(r=>r.json()).then(v=>this.midi=v),...['step','crash'].map(name=>fetch(assetUrl(`${name}.wav`)).then(r=>r.arrayBuffer()).then(b=>this.context!.decodeAudioData(b)).then(b=>{this.buffers.set(name,b);}))]);
       if(assets.some(r=>r.status==='rejected'))console.warn('一部の音素材を読み込めませんでした。');
       this.started=this.context.currentTime+.12;this.cursor=0;this.timer=window.setInterval(()=>this.schedule(),100);
     }

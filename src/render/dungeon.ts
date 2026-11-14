@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { GameState } from '../simulation';
 import { ENEMIES, FLOORS } from '../data/game';
+import { assetUrl } from '../assets';
 
 const TILE = 3.4;
 const EXPLORATION_EYE_OFFSET = 1.35;
@@ -8,7 +9,7 @@ const nearest = (texture: THREE.Texture) => { texture.magFilter = THREE.NearestF
 
 /** Small hand-built pixel silhouettes; deliberately shares a limited old-brass palette. */
 function enemyTexture(art: string): THREE.Texture {
-  if (art === 'whiteKnight') return nearest(new THREE.TextureLoader().load('/assets/teki.png'));
+  if (art === 'whiteKnight') return nearest(new THREE.TextureLoader().load(assetUrl('teki.png')));
   const c = document.createElement('canvas'); c.width = 96; c.height = 112;
   const g = c.getContext('2d')!; g.imageSmoothingEnabled = false;
   const box = (x:number,y:number,w:number,h:number,color:string) => { g.fillStyle=color; g.fillRect(x,y,w,h); };
@@ -70,7 +71,7 @@ export class DungeonView {
       c.getContext('2d')!.drawImage(img,78,500,84,96,0,0,84,96);
       this.wallTexture=nearest(new THREE.CanvasTexture(c)); this.wallTexture.wrapS=this.wallTexture.wrapT=THREE.RepeatWrapping;
       this.floorKey=''; if(this.lastState)this.sync(this.lastState,true);
-    };img.src='/assets/wall.png';
+    };img.src=assetUrl('wall.png');
   }
   private lastState:GameState|undefined;
   private resize(){const w=Math.max(1,this.host.clientWidth),h=Math.max(1,this.host.clientHeight),scale=Math.min(.64,800/w,500/h);this.renderer.setSize(Math.max(1,Math.round(w*scale)),Math.max(1,Math.round(h*scale)),false);this.camera.aspect=w/h;this.updateProjection();this.sizeEnemy();}
